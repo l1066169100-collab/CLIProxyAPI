@@ -52,7 +52,6 @@ type RunSummary struct {
 	Available         int `json:"available"`
 	QuotaExhausted    int `json:"quota_exhausted"`
 	Disabled          int `json:"disabled"`
-	InvalidDisabled   int `json:"invalid_disabled"`
 	Unavailable       int `json:"unavailable"`
 	APICallCandidates int `json:"api_call_candidates"`
 	APICallBatches    int `json:"api_call_batches"`
@@ -143,6 +142,7 @@ func (s *Service) run(ctx context.Context, opts cleanerOptions, dryRun bool) (*R
 	if manager == nil {
 		return nil, fmt.Errorf("core auth manager unavailable")
 	}
+	store := s.snapshotTokenStore()
 	state, err := loadStateFile(opts.StateFile)
 	if err != nil {
 		return nil, err
@@ -225,18 +225,28 @@ func (s *Service) run(ctx context.Context, opts cleanerOptions, dryRun bool) (*R
 		case "delete_401":
 			summary.PendingDelete401++
 			if dryRun {
-				row["disable_result"] = "dry_run_skip_invalid_auth"
+				row["delete_result"] = "dry_run_skip"
+			} else if item.RuntimeOnly || item.Source != "file" || item.Path == "" {
+				summary.BackupFailures++
+				row["delete_result"] = "skip_runtime_only"
+				row["delete_error"] = "runtime_only/source!=file，无法删除"
+			} else if !strings.HasSuffix(strings.ToLower(item.Name), ".json") {
+				summary.BackupFailures++
+				row["delete_result"] = "skip_no_json_name"
+				row["delete_error"] = "不是标准 .json 文件名，默认不删"
 			} else {
-				if errDisable := s.disableAuth(ctx, item, "disabled by auth cleaner (invalid auth)"); errDisable != nil {
-					summary.DisableFailures++
-					row["disable_result"] = "disable_failed"
-					row["disable_error"] = errDisable.Error()
+				backupPath, errDelete := s.deleteAuthFile(ctx, store, item, "")
+				if errDelete != nil {
+					summary.DeleteFailures++
+					row["delete_result"] = "delete_failed"
+					row["delete_error"] = errDelete.Error()
 				} else {
-					summary.InvalidDisabled++
-					row["disable_result"] = "disabled_invalid_auth"
+					_ = backupPath
+					summary.Deleted++
+					row["delete_result"] = "deleted"
 					if item.Name != "" && clearQuotaState(state, item.Name) {
 						summary.StateCleared++
-						row["state_cleared"] = "invalid_auth"
+						row["state_cleared"] = "deleted_invalid_auth"
 					}
 				}
 			}
@@ -288,7 +298,7 @@ func (s *Service) run(ctx context.Context, opts cleanerOptions, dryRun bool) (*R
 					continue
 				}
 			}
-			row := s.runRevivalCycle(ctx, opts, item, entry, summary)
+			row := s.runRevivalCycle(ctx, opts, store, item, entry, summary)
 			results = append(results, row)
 			if clearState, _ := row["clear_state"].(bool); clearState {
 				delete(state.QuotaAccounts, name)
@@ -1158,13 +1168,17 @@ func (s *Service) deleteAuthFile(ctx context.Context, store coreauth.Store, item
 	if item.Path == "" {
 		return "", fmt.Errorf("missing auth file path")
 	}
-	data, err := os.ReadFile(item.Path)
-	if err != nil {
-		return "", err
-	}
-	backupPath, err := writeBackupBytes(backupDir, item.Name, data)
-	if err != nil {
-		return "", err
+	backupPath := ""
+	if strings.TrimSpace(backupDir) != "" {
+		data, err := os.ReadFile(item.Path)
+		if err != nil {
+			return "", err
+		}
+		var errBackup error
+		backupPath, errBackup = writeBackupBytes(backupDir, item.Name, data)
+		if errBackup != nil {
+			return "", errBackup
+		}
 	}
 	if store != nil {
 		if errDelete := store.Delete(ctx, item.Path); errDelete != nil && !os.IsNotExist(errDelete) {
@@ -1234,7 +1248,7 @@ func writeJSONPayload(path string, payload map[string]any) error {
 	return os.Rename(tmp, path)
 }
 
-func (s *Service) runRevivalCycle(ctx context.Context, opts cleanerOptions, item authItem, entry *quotaStateEntry, summary *RunSummary) map[string]any {
+func (s *Service) runRevivalCycle(ctx context.Context, opts cleanerOptions, store coreauth.Store, item authItem, entry *quotaStateEntry, summary *RunSummary) map[string]any {
 	row := map[string]any{
 		"name":          item.Name,
 		"provider":      item.Provider,
@@ -1283,13 +1297,15 @@ func (s *Service) runRevivalCycle(ctx context.Context, opts cleanerOptions, item
 		row["reason"] = errRefresh.Error()
 		entry.LastError = errRefresh.Error()
 		if isDeleteWorthy(errRefresh.Error()) {
-			summary.InvalidDisabled++
-			row["revival_result"] = "invalid_auth_keep_disabled"
-			row["clear_state"] = true
-			row["reason"] = simplifyReason(errRefresh.Error())
-			entry.LastError = simplifyReason(errRefresh.Error())
-			if errDisable := s.disableAuth(ctx, item, "disabled by auth cleaner (invalid refresh auth)"); errDisable != nil {
-				row["disable_error"] = errDisable.Error()
+			backupPath, errDelete := s.deleteAuthFile(ctx, store, item, "")
+			if errDelete != nil {
+				row["delete_error"] = errDelete.Error()
+				entry.NextRevivalCheckAt = formatISOTime(now.Add(time.Duration(opts.RevivalProbeIntervalHours) * time.Hour))
+			} else {
+				_ = backupPath
+				summary.RevivalDeleted++
+				row["revival_result"] = "deleted_on_refresh_failure"
+				row["clear_state"] = true
 			}
 		} else {
 			entry.NextRevivalCheckAt = formatISOTime(now.Add(time.Duration(opts.RevivalProbeIntervalHours) * time.Hour))
@@ -1341,13 +1357,18 @@ func (s *Service) runRevivalCycle(ctx context.Context, opts cleanerOptions, item
 		return row
 	default:
 		if classification == "delete_401" || isDeleteWorthy(reason) {
-			summary.InvalidDisabled++
-			row["revival_result"] = "invalid_auth_keep_disabled"
-			row["clear_state"] = true
-			entry.LastError = simplifyReason(reason)
-			if errDisable := s.disableAuth(ctx, item, "disabled by auth cleaner (invalid probe auth)"); errDisable != nil {
-				row["disable_error"] = errDisable.Error()
+			backupPath, errDelete := s.deleteAuthFile(ctx, store, item, "")
+			if errDelete != nil {
+				row["revival_result"] = "delete_failed"
+				row["delete_error"] = errDelete.Error()
+				entry.LastError = errDelete.Error()
+				entry.NextRevivalCheckAt = formatISOTime(now.Add(time.Duration(opts.RevivalProbeIntervalHours) * time.Hour))
+				return row
 			}
+			_ = backupPath
+			summary.RevivalDeleted++
+			row["revival_result"] = "deleted_on_bad_probe"
+			row["clear_state"] = true
 			return row
 		}
 		row["revival_result"] = "retry_later"
