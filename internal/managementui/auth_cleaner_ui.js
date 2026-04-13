@@ -12,14 +12,6 @@
     fn();
   }
 
-  function escapeHtml(value) {
-    return String(value ?? "")
-      .replaceAll("&", "&amp;")
-      .replaceAll("<", "&lt;")
-      .replaceAll(">", "&gt;")
-      .replaceAll('"', "&quot;");
-  }
-
   function formatJson(value) {
     return JSON.stringify(value, null, 2);
   }
@@ -67,7 +59,7 @@ box-shadow:0 12px 32px rgba(15,23,42,.35);cursor:pointer;font-weight:700
 #${ROOT_ID}.open{display:block}
 #${ROOT_ID} .ac-mask{position:absolute;inset:0;background:rgba(2,6,23,.6);backdrop-filter:blur(2px)}
 #${ROOT_ID} .ac-panel{
-position:absolute;top:3vh;right:2vw;width:min(1120px,96vw);height:94vh;background:#0f172a;color:#e2e8f0;
+position:absolute;top:3vh;right:2vw;width:min(1180px,96vw);height:94vh;background:#0f172a;color:#e2e8f0;
 border:1px solid rgba(148,163,184,.3);border-radius:18px;box-shadow:0 25px 80px rgba(2,6,23,.45);
 display:flex;flex-direction:column;overflow:hidden;font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont
 }
@@ -80,11 +72,10 @@ display:flex;flex-direction:column;overflow:hidden;font-family:ui-sans-serif,sys
 #${ROOT_ID} .ac-main{padding:16px;overflow:auto;background:#0f172a}
 #${ROOT_ID} .ac-block{background:#111827;border:1px solid rgba(148,163,184,.16);border-radius:14px;padding:12px 14px;margin-bottom:14px}
 #${ROOT_ID} .ac-label{display:block;font-size:12px;color:#94a3b8;margin-bottom:6px}
-#${ROOT_ID} .ac-input,#${ROOT_ID} .ac-select,#${ROOT_ID} .ac-textarea{
+#${ROOT_ID} .ac-input,#${ROOT_ID} .ac-select{
 width:100%;box-sizing:border-box;border-radius:10px;border:1px solid rgba(148,163,184,.25);background:#020617;color:#e2e8f0;
 padding:10px 12px;font-size:13px
 }
-#${ROOT_ID} .ac-textarea{min-height:108px;resize:vertical}
 #${ROOT_ID} .ac-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px}
 #${ROOT_ID} .ac-btn{
 border:none;border-radius:10px;background:#1d4ed8;color:#fff;padding:10px 12px;font-size:13px;font-weight:700;cursor:pointer
@@ -98,23 +89,28 @@ border:none;border-radius:10px;background:#1d4ed8;color:#fff;padding:10px 12px;f
 #${ROOT_ID} .ac-card .k{font-size:12px;color:#94a3b8;margin-bottom:8px}
 #${ROOT_ID} .ac-card .v{font-size:24px;font-weight:800}
 #${ROOT_ID} .ac-section-title{font-size:15px;font-weight:800;margin-bottom:10px}
-#${ROOT_ID} .ac-pre{
-margin:0;white-space:pre-wrap;word-break:break-word;background:#020617;border:1px solid rgba(148,163,184,.15);
-border-radius:12px;padding:12px;max-height:320px;overflow:auto;font-size:12px;line-height:1.5
-}
 #${ROOT_ID} .ac-meta{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px}
 #${ROOT_ID} .ac-pill{background:#0b1220;color:#cbd5e1;border:1px solid rgba(148,163,184,.14);border-radius:999px;padding:6px 10px;font-size:12px}
+#${ROOT_ID} .ac-kv{display:grid;grid-template-columns:180px 1fr;gap:8px 12px;font-size:13px}
+#${ROOT_ID} .ac-kv .k{color:#94a3b8}
+#${ROOT_ID} .ac-kv .v{word-break:break-word}
 #${ROOT_ID} .ac-report-list{display:flex;flex-direction:column;gap:8px}
 #${ROOT_ID} .ac-report-item{
 background:#0b1220;border:1px solid rgba(148,163,184,.12);border-radius:12px;padding:10px;cursor:pointer
 }
 #${ROOT_ID} .ac-report-item:hover{border-color:rgba(96,165,250,.6)}
 #${ROOT_ID} .ac-report-item.active{border-color:#60a5fa;background:#0f1b33}
-#${ROOT_ID} .ac-log{max-height:180px}
+#${ROOT_ID} .ac-actions-list{display:flex;flex-direction:column;gap:8px}
+#${ROOT_ID} .ac-action-item{background:#0b1220;border:1px solid rgba(148,163,184,.12);border-radius:12px;padding:10px}
+#${ROOT_ID} .ac-pre{
+margin:0;white-space:pre-wrap;word-break:break-word;background:#020617;border:1px solid rgba(148,163,184,.15);
+border-radius:12px;padding:12px;max-height:220px;overflow:auto;font-size:12px;line-height:1.5
+}
 @media (max-width: 980px){
   #${ROOT_ID} .ac-body{grid-template-columns:1fr}
   #${ROOT_ID} .ac-side{border-right:none;border-bottom:1px solid rgba(148,163,184,.18)}
   #${ROOT_ID} .ac-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  #${ROOT_ID} .ac-kv{grid-template-columns:1fr}
 }
       `,
     });
@@ -129,6 +125,10 @@ background:#0b1220;border:1px solid rgba(148,163,184,.12);border-radius:12px;pad
       busy: false,
       reports: [],
       activeReportName: "",
+      latestStatus: null,
+      latestConfig: null,
+      latestState: null,
+      latestReport: null,
     };
 
     const openBtn = create("button", { id: BTN_ID, text: "Auth Cleaner" });
@@ -147,12 +147,12 @@ background:#0b1220;border:1px solid rgba(148,163,184,.12);border-radius:12px;pad
 
     const statusMeta = create("div", { className: "ac-meta" });
     const summaryGrid = create("div", { className: "ac-grid" });
-    const statusPre = create("pre", { className: "ac-pre", text: "{}" });
-    const configPre = create("pre", { className: "ac-pre", text: "{}" });
-    const statePre = create("pre", { className: "ac-pre", text: "{}" });
+    const overviewKv = create("div", { className: "ac-kv" });
     const reportList = create("div", { className: "ac-report-list" });
-    const reportPre = create("pre", { className: "ac-pre", text: "{}" });
-    const logPre = create("pre", { className: "ac-pre ac-log", text: "等待操作…" });
+    const reportMeta = create("div", { className: "ac-meta" });
+    const reportSummaryGrid = create("div", { className: "ac-grid" });
+    const reportActionsList = create("div", { className: "ac-actions-list" });
+    const logPre = create("pre", { className: "ac-pre", text: "等待操作…" });
 
     function setBusy(flag) {
       state.busy = flag;
@@ -227,14 +227,14 @@ background:#0b1220;border:1px solid rgba(148,163,184,.12);border-radius:12px;pad
     function renderSummaryCards(status) {
       const summary = status?.last_summary || {};
       const cards = [
-        ["已扫描", summary.checked_total ?? 0],
-        ["可用", summary.available ?? 0],
-        ["额度耗尽", summary.quota_exhausted ?? 0],
-        ["禁用", summary.disabled ?? 0],
-        ["401 删除", summary.deleted ?? 0],
-        ["刷新成功", summary.refresh_succeeded ?? 0],
-        ["待恢复", summary.revival_pending ?? 0],
-        ["运行中", status?.running ? "是" : "否"],
+        ["本轮已扫描", summary.checked_total ?? 0],
+        ["当前可用", summary.available ?? 0],
+        ["当前已禁用", summary.disabled ?? 0],
+        ["本轮新禁用", summary.quota_disabled ?? 0],
+        ["本轮刷新成功", summary.refresh_succeeded ?? 0],
+        ["本轮恢复启用", summary.revival_enabled ?? 0],
+        ["本轮进入恢复", summary.revival_pending ?? 0],
+        ["本轮删除401", summary.deleted ?? 0],
       ];
       summaryGrid.innerHTML = "";
       cards.forEach(([key, value]) => {
@@ -249,15 +249,43 @@ background:#0b1220;border:1px solid rgba(148,163,184,.12);border-radius:12px;pad
 
     function renderStatusMeta(status) {
       statusMeta.innerHTML = "";
+      const cleanerConfig = state.latestConfig?.["auth-cleaner"] || {};
+      const trackedQuota = Object.keys(state.latestState?.quota_accounts || {}).length;
       const pills = [
+        `运行中: ${status?.running ? "是" : "否"}`,
         `启用: ${status?.enabled ? "是" : "否"}`,
         `间隔: ${status?.interval_seconds ?? "-"} 秒`,
+        `主动探测: ${cleanerConfig.enable_api_call_check ? "开" : "关"}`,
+        `quota 追踪数: ${trackedQuota}`,
         `下次: ${formatTime(status?.next_run_at)}`,
         `上次开始: ${formatTime(status?.last_started_at)}`,
         `上次结束: ${formatTime(status?.last_finished_at)}`,
       ];
       if (status?.last_error) pills.push(`最后错误: ${status.last_error}`);
       pills.forEach((text) => statusMeta.append(create("div", { className: "ac-pill", text })));
+    }
+
+    function renderOverview() {
+      const status = state.latestStatus || {};
+      const cleanerConfig = state.latestConfig?.["auth-cleaner"] || {};
+      const quotaAccounts = Object.keys(state.latestState?.quota_accounts || {}).length;
+      const entries = [
+        ["调度间隔", `${status?.interval_seconds ?? "-"} 秒`],
+        ["超时时间", `${cleanerConfig.timeout_seconds ?? "-"} 秒`],
+        ["主动探测", cleanerConfig.enable_api_call_check ? "开启" : "关闭"],
+        ["探测 Provider", cleanerConfig.api_call_providers || "-"],
+        ["下次自动扫描", formatTime(status?.next_run_at)],
+        ["状态文件追踪数", quotaAccounts],
+        ["报告目录", cleanerConfig.report_dir || "-"],
+        ["备份目录", cleanerConfig.backup_dir || "-"],
+      ];
+      overviewKv.innerHTML = "";
+      entries.forEach(([k, v]) => {
+        overviewKv.append(
+          create("div", { className: "k", text: k }),
+          create("div", { className: "v", text: String(v) }),
+        );
+      });
     }
 
     function renderReports(activeName) {
@@ -285,6 +313,72 @@ background:#0b1220;border:1px solid rgba(148,163,184,.12);border-radius:12px;pad
       });
     }
 
+    function renderReportDetails(payload) {
+      state.latestReport = payload || null;
+      reportMeta.innerHTML = "";
+      reportSummaryGrid.innerHTML = "";
+      reportActionsList.innerHTML = "";
+
+      if (!payload || typeof payload !== "object") {
+        reportMeta.append(create("div", { className: "ac-pill", text: "暂无报告详情" }));
+        return;
+      }
+
+      const summary = payload.summary || {};
+      [
+        `报告时间: ${formatTime(payload.generated_at)}`,
+        `dry_run: ${payload.dry_run ? "true" : "false"}`,
+        `run_id: ${payload.run_id || "-"}`,
+      ].forEach((text) => reportMeta.append(create("div", { className: "ac-pill", text })));
+
+      const cards = [
+        ["已扫描", summary.checked_total ?? 0],
+        ["新禁用", summary.quota_disabled ?? 0],
+        ["刷新成功", summary.refresh_succeeded ?? 0],
+        ["恢复启用", summary.revival_enabled ?? 0],
+        ["仍然 quota", summary.revival_still_quota ?? 0],
+        ["删除 401", summary.deleted ?? 0],
+      ];
+      cards.forEach(([key, value]) => {
+        reportSummaryGrid.append(
+          create("div", { className: "ac-card" }, [
+            create("div", { className: "k", text: key }),
+            create("div", { className: "v", text: String(value) }),
+          ]),
+        );
+      });
+
+      const actionRows = (payload.results || []).filter(
+        (row) => row?.disable_result || row?.delete_result || row?.revival_result,
+      );
+      if (!actionRows.length) {
+        reportActionsList.append(create("div", { className: "ac-pill", text: "本报告没有实际动作" }));
+        return;
+      }
+
+      actionRows.slice(0, 80).forEach((row) => {
+        const texts = [
+          `provider=${row.provider || "-"}`,
+          row.disable_result ? `disable=${row.disable_result}` : null,
+          row.delete_result ? `delete=${row.delete_result}` : null,
+          row.revival_result ? `revival=${row.revival_result}` : null,
+          row.revival_classification ? `class=${row.revival_classification}` : null,
+        ].filter(Boolean);
+        reportActionsList.append(
+          create("div", { className: "ac-action-item" }, [
+            create("div", { text: row.name || "-" }),
+            create("div", { className: "ac-subtitle", text: texts.join(" | ") }),
+            row.reason
+              ? create("div", {
+                  className: "ac-subtitle",
+                  text: `原因: ${String(row.reason).slice(0, 220)}`,
+                })
+              : null,
+          ]),
+        );
+      });
+    }
+
     async function loadStatusBundle() {
       setBusy(true);
       try {
@@ -293,11 +387,12 @@ background:#0b1220;border:1px solid rgba(148,163,184,.12);border-radius:12px;pad
           api("/v0/management/auth-cleaner/config"),
           api("/v0/management/auth-cleaner/state"),
         ]);
+        state.latestStatus = status;
+        state.latestConfig = config;
+        state.latestState = cleanerState;
         renderStatusMeta(status);
         renderSummaryCards(status);
-        statusPre.textContent = formatJson(status);
-        configPre.textContent = formatJson(config);
-        statePre.textContent = formatJson(cleanerState);
+        renderOverview();
         writeLog("已刷新状态 / 配置 / 状态文件", {
           next_run_at: status?.next_run_at,
           last_finished_at: status?.last_finished_at,
@@ -318,7 +413,7 @@ background:#0b1220;border:1px solid rgba(148,163,184,.12);border-radius:12px;pad
         const active = selectLatest ? state.reports[0]?.name || "" : state.activeReportName;
         renderReports(active);
         if (active) await loadReport(active);
-        else reportPre.textContent = "{}";
+        else renderReportDetails(null);
         writeLog("已刷新报告列表", {
           reports: state.reports.length,
           latest: state.reports[0]?.name || null,
@@ -337,9 +432,9 @@ background:#0b1220;border:1px solid rgba(148,163,184,.12);border-radius:12px;pad
       renderReports(name);
       try {
         const payload = await api(`/v0/management/auth-cleaner/reports/${encodeURIComponent(name)}`);
-        reportPre.textContent = formatJson(payload);
+        renderReportDetails(payload);
       } catch (error) {
-        reportPre.textContent = String(error?.message || error);
+        renderReportDetails(null);
         throw error;
       }
     }
@@ -448,20 +543,17 @@ background:#0b1220;border:1px solid rgba(148,163,184,.12);border-radius:12px;pad
           statusMeta,
           summaryGrid,
           create("div", { className: "ac-block" }, [
-            create("div", { className: "ac-section-title", text: "状态 JSON" }),
-            statusPre,
+            create("div", { className: "ac-section-title", text: "运行概览" }),
+            overviewKv,
           ]),
           create("div", { className: "ac-block" }, [
-            create("div", { className: "ac-section-title", text: "生效配置 JSON" }),
-            configPre,
+            create("div", { className: "ac-section-title", text: "当前报告概览" }),
+            reportMeta,
+            reportSummaryGrid,
           ]),
           create("div", { className: "ac-block" }, [
-            create("div", { className: "ac-section-title", text: "状态文件 JSON" }),
-            statePre,
-          ]),
-          create("div", { className: "ac-block" }, [
-            create("div", { className: "ac-section-title", text: "当前报告 JSON" }),
-            reportPre,
+            create("div", { className: "ac-section-title", text: "当前报告动作明细" }),
+            reportActionsList,
           ]),
           create("div", { className: "ac-block" }, [
             create("div", { className: "ac-section-title", text: "操作日志" }),
