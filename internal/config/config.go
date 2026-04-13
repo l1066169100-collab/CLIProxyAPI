@@ -221,14 +221,17 @@ type AuthCleanerConfig struct {
 	IntervalSeconds int `yaml:"interval-seconds" json:"interval-seconds"`
 	TimeoutSeconds  int `yaml:"timeout-seconds" json:"timeout-seconds"`
 
-	EnableAPICallCheck bool   `yaml:"enable-api-call-check" json:"enable-api-call-check"`
-	APICallURL         string `yaml:"api-call-url" json:"api-call-url"`
-	APICallMethod      string `yaml:"api-call-method" json:"api-call-method"`
-	APICallAccountID   string `yaml:"api-call-account-id" json:"api-call-account-id"`
-	APICallUserAgent   string `yaml:"api-call-user-agent" json:"api-call-user-agent"`
-	APICallBody        string `yaml:"api-call-body" json:"api-call-body"`
-	APICallProviders   string `yaml:"api-call-providers" json:"api-call-providers"`
-	APICallMaxPerRun   int    `yaml:"api-call-max-per-run" json:"api-call-max-per-run"`
+	EnableAPICallCheck    bool   `yaml:"enable-api-call-check" json:"enable-api-call-check"`
+	APICallURL            string `yaml:"api-call-url" json:"api-call-url"`
+	APICallMethod         string `yaml:"api-call-method" json:"api-call-method"`
+	APICallAccountID      string `yaml:"api-call-account-id" json:"api-call-account-id"`
+	APICallUserAgent      string `yaml:"api-call-user-agent" json:"api-call-user-agent"`
+	APICallBody           string `yaml:"api-call-body" json:"api-call-body"`
+	APICallProviders      string `yaml:"api-call-providers" json:"api-call-providers"`
+	APICallMaxPerRun      int    `yaml:"api-call-max-per-run" json:"api-call-max-per-run"`
+	QuotaThresholdPercent int    `yaml:"quota-threshold-percent" json:"quota-threshold-percent"`
+	ExpiryThresholdDays   int    `yaml:"expiry-threshold-days" json:"expiry-threshold-days"`
+	EnableRefresh         bool   `yaml:"enable-refresh" json:"enable-refresh"`
 
 	APICallSleepMinSeconds float64 `yaml:"api-call-sleep-min-seconds" json:"api-call-sleep-min-seconds"`
 	APICallSleepMaxSeconds float64 `yaml:"api-call-sleep-max-seconds" json:"api-call-sleep-max-seconds"`

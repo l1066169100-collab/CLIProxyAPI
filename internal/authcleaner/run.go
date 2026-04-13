@@ -151,6 +151,7 @@ func (s *Service) run(ctx context.Context, opts cleanerOptions, dryRun bool) (*R
 	runID := time.Now().UTC().Format("20060102T150405Z")
 	summary := &RunSummary{}
 	results := make([]map[string]any, 0, len(items))
+	disabledCandidates := make([]authItem, 0, len(items))
 	nameToItem := make(map[string]authItem, len(items))
 	providerSet := parseProviderSet(opts.APICallProviders)
 
@@ -202,6 +203,9 @@ func (s *Service) run(ctx context.Context, opts cleanerOptions, dryRun bool) (*R
 				summary.StateCleared++
 				row["state_cleared"] = "became_available"
 			}
+			if !dryRun {
+				s.maybeRefreshExpiringAuth(ctx, opts, item, row, summary)
+			}
 		case "quota_exhausted":
 			summary.QuotaExhausted++
 			if dryRun {
@@ -220,6 +224,9 @@ func (s *Service) run(ctx context.Context, opts cleanerOptions, dryRun bool) (*R
 			}
 		case "disabled":
 			summary.Disabled++
+			if shouldMaintainDisabledAuth(item, state) {
+				disabledCandidates = append(disabledCandidates, item)
+			}
 		case "unavailable":
 			summary.Unavailable++
 		case "delete_401":
@@ -264,48 +271,27 @@ func (s *Service) run(ctx context.Context, opts cleanerOptions, dryRun bool) (*R
 	}
 
 	if !dryRun {
-		now := time.Now().UTC()
-		names := make([]string, 0, len(state.QuotaAccounts)+len(items))
-		seenNames := make(map[string]struct{}, len(state.QuotaAccounts)+len(items))
-		for _, item := range items {
-			if !shouldAttemptDisabledRevival(item) {
-				continue
+		sort.Slice(disabledCandidates, func(i, j int) bool {
+			if disabledCandidates[i].Name == disabledCandidates[j].Name {
+				return disabledCandidates[i].ID < disabledCandidates[j].ID
 			}
-			ensureQuotaState(state, item, firstNonEmpty(item.StatusMessage, "disabled"), opts)
+			return disabledCandidates[i].Name < disabledCandidates[j].Name
+		})
+		seenNames := make(map[string]struct{}, len(disabledCandidates))
+		for _, item := range disabledCandidates {
 			if _, ok := seenNames[item.Name]; ok {
 				continue
 			}
 			seenNames[item.Name] = struct{}{}
-			names = append(names, item.Name)
-		}
-		for name := range state.QuotaAccounts {
-			if _, ok := seenNames[name]; ok {
-				continue
-			}
-			seenNames[name] = struct{}{}
-			names = append(names, name)
-		}
-		sort.Strings(names)
-		for _, name := range names {
-			entry := state.QuotaAccounts[name]
-			item, ok := nameToItem[name]
-			if !ok || entry == nil {
-				continue
-			}
-			if !item.Disabled {
-				dueAt := parseISOTime(entry.NextRevivalCheckAt)
-				if !dueAt.IsZero() && dueAt.After(now) {
-					continue
-				}
-			}
+			entry := ensureQuotaState(state, item, firstNonEmpty(item.StatusMessage, "disabled"), opts)
 			row := s.runRevivalCycle(ctx, opts, store, item, entry, summary)
 			results = append(results, row)
 			if clearState, _ := row["clear_state"].(bool); clearState {
-				delete(state.QuotaAccounts, name)
+				delete(state.QuotaAccounts, item.Name)
 				continue
 			}
 			if result, _ := row["revival_result"].(string); result == "enabled" || strings.HasPrefix(result, "deleted_") {
-				delete(state.QuotaAccounts, name)
+				delete(state.QuotaAccounts, item.Name)
 			}
 		}
 	}
@@ -520,7 +506,7 @@ func shouldProbeAPICall(item authItem, providerSet map[string]struct{}) bool {
 	return kind == "available"
 }
 
-func shouldAttemptDisabledRevival(item authItem) bool {
+func shouldMaintainDisabledAuth(item authItem, state *stateFile) bool {
 	if !item.Disabled {
 		return false
 	}
@@ -529,10 +515,22 @@ func shouldAttemptDisabledRevival(item authItem) bool {
 	}
 	switch strings.ToLower(strings.TrimSpace(item.Provider)) {
 	case "codex", "openai", "chatgpt":
-		return true
 	default:
 		return false
 	}
+	if state != nil && state.QuotaAccounts != nil {
+		if _, ok := state.QuotaAccounts[item.Name]; ok {
+			return true
+		}
+	}
+	statusMessage := strings.ToLower(strings.TrimSpace(item.StatusMessage))
+	if strings.Contains(statusMessage, "disabled by auth cleaner") {
+		return true
+	}
+	if patternQuota.MatchString(statusMessage) {
+		return true
+	}
+	return false
 }
 
 func (s *Service) runAPICallFullScan(ctx context.Context, opts cleanerOptions, items []authItem, providerSet map[string]struct{}, summary *RunSummary) map[string]apiProbeResult {
@@ -647,7 +645,7 @@ func (s *Service) runSingleAPICallProbe(ctx context.Context, opts cleanerOptions
 	if err != nil {
 		return nil, err
 	}
-	classification, reason := classifyAPICallResponse(resp)
+	classification, reason := classifyAPICallResponse(resp, opts.QuotaThresholdPercent)
 	return &apiProbeResult{
 		Request:        requestPayload,
 		Response:       resp,
@@ -699,17 +697,20 @@ func doAuthedProbe(ctx context.Context, opts cleanerOptions, auth *coreauth.Auth
 	return &httpProbeResponse{StatusCode: resp.StatusCode, Header: resp.Header, Body: parseBody(bodyBytes)}, nil
 }
 
-func classifyAPICallResponse(resp *httpProbeResponse) (string, string) {
+func classifyAPICallResponse(resp *httpProbeResponse, quotaThreshold int) (string, string) {
 	if resp == nil {
 		return "", ""
+	}
+	if quotaThreshold <= 0 {
+		quotaThreshold = defaultQuotaThresholdPercent
 	}
 	statusCode := resp.StatusCode
 	bodySignal := bodyToString(resp.Body)
 	headerText := bodyToString(resp.Header)
-	if statusCode == http.StatusUnauthorized {
+	if statusCode == http.StatusUnauthorized || statusCode == http.StatusPaymentRequired {
 		return "delete_401", firstNonEmpty(bodySignal, fmt.Sprintf("status_code=%d", statusCode))
 	}
-	if statusCode == http.StatusPaymentRequired || statusCode == http.StatusForbidden || statusCode == http.StatusTooManyRequests {
+	if statusCode == http.StatusForbidden || statusCode == http.StatusTooManyRequests {
 		return "quota_exhausted", firstNonEmpty(bodySignal, fmt.Sprintf("status_code=%d", statusCode))
 	}
 	if bodyMap, ok := resp.Body.(map[string]any); ok {
@@ -722,6 +723,11 @@ func classifyAPICallResponse(resp *httpProbeResponse) (string, string) {
 			}
 			if pattern401.MatchString(errorText) {
 				return "delete_401", firstNonEmpty(bodySignal, errorMessage, errorType)
+			}
+		}
+		if usage := parseUsageInfoBody(bodyMap); usage != nil {
+			if usage.reachedThreshold(quotaThreshold) {
+				return "quota_exhausted", firstNonEmpty(bodySignal, usage.summary(quotaThreshold), "quota_threshold_reached")
 			}
 		}
 		if isLimitReachedWindow(bodyMap["rate_limit"]) || isLimitReachedWindow(bodyMap["code_review_rate_limit"]) {
@@ -753,6 +759,79 @@ func isLimitReachedWindow(value any) bool {
 		return true
 	}
 	return false
+}
+
+type usageInfoBody struct {
+	PlanType         string
+	PrimaryUsedPct   int
+	SecondaryUsedPct *int
+	HasCredits       bool
+}
+
+func parseUsageInfoBody(body map[string]any) *usageInfoBody {
+	if len(body) == 0 {
+		return nil
+	}
+	rateLimit, _ := body["rate_limit"].(map[string]any)
+	primary, _ := rateLimit["primary_window"].(map[string]any)
+	if len(primary) == 0 {
+		return nil
+	}
+	info := &usageInfoBody{
+		PlanType:       strings.TrimSpace(stringValueAny(body["plan_type"])),
+		PrimaryUsedPct: intValueAny(primary["used_percent"]),
+	}
+	if secondary, ok := rateLimit["secondary_window"].(map[string]any); ok && len(secondary) > 0 {
+		value := intValueAny(secondary["used_percent"])
+		info.SecondaryUsedPct = &value
+	}
+	if credits, ok := body["credits"].(map[string]any); ok {
+		if hasCredits, okBool := credits["has_credits"].(bool); okBool {
+			info.HasCredits = hasCredits
+		}
+	}
+	return info
+}
+
+func (u *usageInfoBody) reachedThreshold(threshold int) bool {
+	if u == nil {
+		return false
+	}
+	if threshold <= 0 {
+		threshold = defaultQuotaThresholdPercent
+	}
+	if u.PrimaryUsedPct >= threshold {
+		return true
+	}
+	return u.SecondaryUsedPct != nil && *u.SecondaryUsedPct >= threshold
+}
+
+func (u *usageInfoBody) belowThreshold(threshold int) bool {
+	if u == nil {
+		return false
+	}
+	if threshold <= 0 {
+		threshold = defaultQuotaThresholdPercent
+	}
+	if u.PrimaryUsedPct >= threshold {
+		return false
+	}
+	return u.SecondaryUsedPct == nil || *u.SecondaryUsedPct < threshold
+}
+
+func (u *usageInfoBody) summary(threshold int) string {
+	if u == nil {
+		return ""
+	}
+	if threshold <= 0 {
+		threshold = defaultQuotaThresholdPercent
+	}
+	parts := []string{fmt.Sprintf("5h=%d%%", u.PrimaryUsedPct)}
+	if u.SecondaryUsedPct != nil {
+		parts = append(parts, fmt.Sprintf("week=%d%%", *u.SecondaryUsedPct))
+	}
+	parts = append(parts, fmt.Sprintf("threshold=%d%%", threshold))
+	return strings.Join(parts, ", ")
 }
 
 func parseBody(body []byte) any {
@@ -1289,42 +1368,25 @@ func (s *Service) runRevivalCycle(ctx context.Context, opts cleanerOptions, stor
 	}
 	row["auth_payload_loaded"] = true
 
-	summary.RefreshAttempts++
-	refreshedPayload, refreshResp, errRefresh := refreshOpenAIFamilyTokens(ctx, opts, item, authPayload)
-	if errRefresh != nil {
-		summary.RefreshFailed++
-		row["refresh_result"] = "failed"
-		row["reason"] = errRefresh.Error()
-		entry.LastError = errRefresh.Error()
-		if isDeleteWorthy(errRefresh.Error()) {
+	if !hasRefreshTokenPayload(authPayload) {
+		if remainingSeconds, expiryKnown := getPayloadRemainingSeconds(authPayload); expiryKnown && remainingSeconds <= 0 {
 			backupPath, errDelete := s.deleteAuthFile(ctx, store, item, "")
 			if errDelete != nil {
+				row["revival_result"] = "delete_failed"
 				row["delete_error"] = errDelete.Error()
+				entry.LastError = errDelete.Error()
 				entry.NextRevivalCheckAt = formatISOTime(now.Add(time.Duration(opts.RevivalProbeIntervalHours) * time.Hour))
-			} else {
-				_ = backupPath
-				summary.RevivalDeleted++
-				row["revival_result"] = "deleted_on_refresh_failure"
-				row["clear_state"] = true
+				return row
 			}
-		} else {
-			entry.NextRevivalCheckAt = formatISOTime(now.Add(time.Duration(opts.RevivalProbeIntervalHours) * time.Hour))
+			_ = backupPath
+			summary.RevivalDeleted++
+			row["revival_result"] = "deleted_expired_without_refresh_token"
+			row["clear_state"] = true
+			return row
 		}
-		return row
 	}
-	summary.RefreshSucceeded++
-	row["refresh_result"] = "ok"
-	row["refresh_response_keys"] = sortedMapKeys(refreshResp)
-	if errWrite := writeJSONPayload(path, refreshedPayload); errWrite != nil {
-		row["revival_result"] = "write_failed"
-		row["reason"] = errWrite.Error()
-		entry.LastError = errWrite.Error()
-		entry.NextRevivalCheckAt = formatISOTime(now.Add(time.Duration(opts.RevivalProbeIntervalHours) * time.Hour))
-		return row
-	}
-	_ = s.updateAuthMetadata(ctx, item, refreshedPayload, true)
 
-	probeResp, errProbe := directProbeAuth(ctx, opts, item, refreshedPayload)
+	probeResp, errProbe := directProbeAuth(ctx, opts, item, authPayload)
 	if errProbe != nil {
 		row["revival_result"] = "probe_failed"
 		row["reason"] = errProbe.Error()
@@ -1333,13 +1395,32 @@ func (s *Service) runRevivalCycle(ctx context.Context, opts cleanerOptions, stor
 		return row
 	}
 	row["probe"] = probeResp
-	classification, reason := classifyAPICallResponse(probeResp)
+	classification, reason := classifyAPICallResponse(probeResp, opts.QuotaThresholdPercent)
 	row["revival_classification"] = classification
 	row["reason"] = reason
 
 	switch classification {
 	case "", "ok":
-		if errEnable := s.enableAuth(ctx, item, refreshedPayload); errEnable != nil {
+		payloadToEnable := authPayload
+		if opts.EnableRefresh && shouldRefreshPayloadSoon(authPayload, opts.ExpiryThresholdDays) {
+			summary.RefreshAttempts++
+			refreshedPayload, refreshResp, errRefresh := refreshOpenAIFamilyTokens(ctx, opts, item, authPayload)
+			if errRefresh != nil {
+				summary.RefreshFailed++
+				row["refresh_result"] = "failed"
+				row["refresh_error"] = errRefresh.Error()
+			} else if errWrite := writeJSONPayload(path, refreshedPayload); errWrite != nil {
+				summary.RefreshFailed++
+				row["refresh_result"] = "write_failed"
+				row["refresh_error"] = errWrite.Error()
+			} else {
+				summary.RefreshSucceeded++
+				row["refresh_result"] = "ok"
+				row["refresh_response_keys"] = sortedMapKeys(refreshResp)
+				payloadToEnable = refreshedPayload
+			}
+		}
+		if errEnable := s.enableAuth(ctx, item, payloadToEnable); errEnable != nil {
 			row["revival_result"] = "enable_failed"
 			row["reason"] = errEnable.Error()
 			entry.LastError = errEnable.Error()
@@ -1376,6 +1457,52 @@ func (s *Service) runRevivalCycle(ctx context.Context, opts cleanerOptions, stor
 		entry.NextRevivalCheckAt = formatISOTime(now.Add(time.Duration(opts.RevivalProbeIntervalHours) * time.Hour))
 		return row
 	}
+}
+
+func (s *Service) maybeRefreshExpiringAuth(ctx context.Context, opts cleanerOptions, item authItem, row map[string]any, summary *RunSummary) {
+	if !opts.EnableRefresh {
+		return
+	}
+	if item.RuntimeOnly || item.Source != "file" || item.Path == "" {
+		return
+	}
+	switch strings.ToLower(strings.TrimSpace(item.Provider)) {
+	case "codex", "openai", "chatgpt":
+	default:
+		return
+	}
+	authPayload, err := loadJSONPayload(item.Path)
+	if err != nil {
+		row["refresh_result"] = "load_failed"
+		row["refresh_error"] = err.Error()
+		return
+	}
+	if !shouldRefreshPayloadSoon(authPayload, opts.ExpiryThresholdDays) {
+		return
+	}
+	summary.RefreshAttempts++
+	refreshedPayload, refreshResp, errRefresh := refreshOpenAIFamilyTokens(ctx, opts, item, authPayload)
+	if errRefresh != nil {
+		summary.RefreshFailed++
+		row["refresh_result"] = "failed"
+		row["refresh_error"] = errRefresh.Error()
+		return
+	}
+	if errWrite := writeJSONPayload(item.Path, refreshedPayload); errWrite != nil {
+		summary.RefreshFailed++
+		row["refresh_result"] = "write_failed"
+		row["refresh_error"] = errWrite.Error()
+		return
+	}
+	if errUpdate := s.updateAuthMetadata(ctx, item, refreshedPayload, false); errUpdate != nil {
+		summary.RefreshFailed++
+		row["refresh_result"] = "update_failed"
+		row["refresh_error"] = errUpdate.Error()
+		return
+	}
+	summary.RefreshSucceeded++
+	row["refresh_result"] = "ok"
+	row["refresh_response_keys"] = sortedMapKeys(refreshResp)
 }
 
 func refreshOpenAIFamilyTokens(ctx context.Context, opts cleanerOptions, item authItem, authPayload map[string]any) (map[string]any, map[string]any, error) {
@@ -1444,7 +1571,10 @@ func refreshOpenAIFamilyTokens(ctx context.Context, opts cleanerOptions, item au
 		}
 	}
 	newPayload["last_refresh"] = formatISOTime(time.Now().UTC())
-	newPayload["expired"] = false
+	if expiresIn, ok := numberValueAny(tokenResp["expires_in"]); ok && expiresIn > 0 {
+		newPayload["expires_in"] = int64(expiresIn)
+		newPayload["expired"] = time.Now().UTC().Add(time.Duration(expiresIn) * time.Second).Format(time.RFC3339)
+	}
 	if newPayload["account_id"] == nil && item.AccountID != "" {
 		newPayload["account_id"] = item.AccountID
 	}
@@ -1503,6 +1633,65 @@ func parseJWTPayload(token string) map[string]any {
 		return map[string]any{}
 	}
 	return payload
+}
+
+func hasRefreshTokenPayload(authPayload map[string]any) bool {
+	return strings.TrimSpace(stringValueAny(authPayload["refresh_token"])) != ""
+}
+
+func getPayloadRemainingSeconds(authPayload map[string]any) (float64, bool) {
+	if authPayload == nil {
+		return 0, false
+	}
+	if expiredRaw := strings.TrimSpace(stringValueAny(authPayload["expired"])); expiredRaw != "" {
+		if t, ok := parseFlexibleTime(expiredRaw); ok {
+			return t.Sub(time.Now().UTC()).Seconds(), true
+		}
+	}
+	accessToken := strings.TrimSpace(stringValueAny(authPayload["access_token"]))
+	if accessToken == "" {
+		return 0, false
+	}
+	claims := parseJWTPayload(accessToken)
+	if exp, ok := numberValueAny(claims["exp"]); ok {
+		return exp - float64(time.Now().Unix()), true
+	}
+	return 0, false
+}
+
+func shouldRefreshPayloadSoon(authPayload map[string]any, expiryThresholdDays int) bool {
+	if expiryThresholdDays <= 0 {
+		return false
+	}
+	if !hasRefreshTokenPayload(authPayload) {
+		return false
+	}
+	remainingSeconds, expiryKnown := getPayloadRemainingSeconds(authPayload)
+	if !expiryKnown || remainingSeconds <= 0 {
+		return false
+	}
+	return remainingSeconds < float64(expiryThresholdDays*24*3600)
+}
+
+func parseFlexibleTime(raw string) (time.Time, bool) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return time.Time{}, false
+	}
+	layouts := []string{
+		time.RFC3339,
+		"2006-01-02T15:04:05.999999999Z07:00",
+		"2006-01-02T15:04:05",
+		"2006-01-02 15:04:05",
+		"2006-01-02",
+	}
+	for _, layout := range layouts {
+		t, err := time.Parse(layout, trimmed)
+		if err == nil {
+			return t.UTC(), true
+		}
+	}
+	return time.Time{}, false
 }
 
 func isDeleteWorthy(text string) bool {
@@ -1599,5 +1788,62 @@ func stringValueAny(value any) string {
 		return "false"
 	default:
 		return fmt.Sprint(v)
+	}
+}
+
+func intValueAny(value any) int {
+	switch v := value.(type) {
+	case nil:
+		return 0
+	case int:
+		return v
+	case int64:
+		return int(v)
+	case float64:
+		return int(v)
+	case json.Number:
+		if parsed, err := v.Int64(); err == nil {
+			return int(parsed)
+		}
+		if parsed, err := v.Float64(); err == nil {
+			return int(parsed)
+		}
+		return 0
+	case string:
+		parsed, _ := strconv.Atoi(strings.TrimSpace(v))
+		return parsed
+	default:
+		parsed, _ := strconv.Atoi(strings.TrimSpace(fmt.Sprint(v)))
+		return parsed
+	}
+}
+
+func numberValueAny(value any) (float64, bool) {
+	switch v := value.(type) {
+	case nil:
+		return 0, false
+	case int:
+		return float64(v), true
+	case int64:
+		return float64(v), true
+	case float64:
+		return v, true
+	case json.Number:
+		if parsed, err := v.Float64(); err == nil {
+			return parsed, true
+		}
+		return 0, false
+	case string:
+		parsed, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
+		if err != nil {
+			return 0, false
+		}
+		return parsed, true
+	default:
+		parsed, err := strconv.ParseFloat(strings.TrimSpace(fmt.Sprint(v)), 64)
+		if err != nil {
+			return 0, false
+		}
+		return parsed, true
 	}
 }

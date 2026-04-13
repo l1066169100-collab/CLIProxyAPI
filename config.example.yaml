@@ -118,6 +118,9 @@ disable-cooling: false
 #   api-call-user-agent: "Mozilla/5.0 CLIProxyAPI auth-cleaner/1.0"
 #   api-call-providers: "codex,openai,chatgpt"
 #   api-call-max-per-run: 9
+#   quota-threshold-percent: 100
+#   expiry-threshold-days: 3
+#   enable-refresh: false
 #   api-call-sleep-min-seconds: 5
 #   api-call-sleep-max-seconds: 10
 #   revival-wait-days: 7

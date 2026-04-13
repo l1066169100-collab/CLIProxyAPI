@@ -29,6 +29,9 @@ const (
 	defaultAPICallUserAgent          = "Mozilla/5.0 CLIProxyAPI auth-cleaner/1.0"
 	defaultAPICallProviders          = "codex,openai,chatgpt"
 	defaultAPICallMaxPerRun          = 9
+	defaultQuotaThresholdPercent     = 100
+	defaultExpiryThresholdDays       = 3
+	defaultEnableRefresh             = false
 	defaultAPICallSleepMinSeconds    = 5
 	defaultAPICallSleepMaxSeconds    = 10
 	defaultRevivalWaitDays           = 7
@@ -79,6 +82,9 @@ type EffectiveConfig struct {
 	APICallBody               string  `json:"api_call_body,omitempty"`
 	APICallProviders          string  `json:"api_call_providers"`
 	APICallMaxPerRun          int     `json:"api_call_max_per_run"`
+	QuotaThresholdPercent     int     `json:"quota_threshold_percent"`
+	ExpiryThresholdDays       int     `json:"expiry_threshold_days"`
+	EnableRefresh             bool    `json:"enable_refresh"`
 	APICallSleepMinSeconds    float64 `json:"api_call_sleep_min_seconds"`
 	APICallSleepMaxSeconds    float64 `json:"api_call_sleep_max_seconds"`
 	RevivalWaitDays           int     `json:"revival_wait_days"`
@@ -527,6 +533,20 @@ func normalizeOptions(cfg *config.Config, configFilePath string) cleanerOptions 
 	if apiCallMaxPerRun > defaultAPICallMaxPerRun {
 		apiCallMaxPerRun = defaultAPICallMaxPerRun
 	}
+	quotaThresholdPercent := raw.QuotaThresholdPercent
+	if quotaThresholdPercent <= 0 {
+		quotaThresholdPercent = defaultQuotaThresholdPercent
+	}
+	if quotaThresholdPercent > 100 {
+		quotaThresholdPercent = 100
+	}
+	expiryThresholdDays := raw.ExpiryThresholdDays
+	if expiryThresholdDays < 0 {
+		expiryThresholdDays = 0
+	}
+	if expiryThresholdDays == 0 {
+		expiryThresholdDays = defaultExpiryThresholdDays
+	}
 	apiCallSleepMin := raw.APICallSleepMinSeconds
 	if apiCallSleepMin < 0 {
 		apiCallSleepMin = 0
@@ -586,6 +606,9 @@ func normalizeOptions(cfg *config.Config, configFilePath string) cleanerOptions 
 			APICallBody:               raw.APICallBody,
 			APICallProviders:          apiCallProviders,
 			APICallMaxPerRun:          apiCallMaxPerRun,
+			QuotaThresholdPercent:     quotaThresholdPercent,
+			ExpiryThresholdDays:       expiryThresholdDays,
+			EnableRefresh:             raw.EnableRefresh,
 			APICallSleepMinSeconds:    apiCallSleepMin,
 			APICallSleepMaxSeconds:    apiCallSleepMax,
 			RevivalWaitDays:           revivalWaitDays,
