@@ -66,6 +66,68 @@ func (h *Handler) RunAuthCleaner(c *gin.Context) {
 	})
 }
 
+func (h *Handler) ForceAuthCleanerRevivalNow(c *gin.Context) {
+	svc := h.cleanerService()
+	if svc == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "auth cleaner unavailable"})
+		return
+	}
+
+	var req struct {
+		Names  []string `json:"names"`
+		RunNow *bool    `json:"run_now"`
+	}
+	_ = c.ShouldBindJSON(&req)
+
+	runNow := true
+	if req.RunNow != nil {
+		runNow = *req.RunNow
+	}
+	if raw := strings.TrimSpace(c.Query("run_now")); raw != "" {
+		switch strings.ToLower(raw) {
+		case "1", "true", "yes", "on":
+			runNow = true
+		case "0", "false", "no", "off":
+			runNow = false
+		}
+	}
+
+	count, err := svc.ForceRevivalNow(req.Names)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	resp := gin.H{
+		"status":          "ok",
+		"forced_accounts": count,
+		"run_now":         runNow,
+	}
+	if !runNow {
+		c.JSON(http.StatusOK, resp)
+		return
+	}
+
+	report, err := svc.RunNow(c.Request.Context(), false)
+	if err != nil {
+		switch {
+		case errors.Is(err, authcleaner.ErrAlreadyRunning):
+			c.JSON(http.StatusConflict, gin.H{"error": "auth cleaner already running", "forced_accounts": count})
+		case strings.Contains(strings.ToLower(err.Error()), "disabled"):
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error(), "forced_accounts": count})
+		default:
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error(), "forced_accounts": count})
+		}
+		return
+	}
+
+	resp["run_id"] = report.RunID
+	resp["generated_at"] = report.GeneratedAt
+	resp["report_path"] = report.ReportPath
+	resp["summary"] = report.Summary
+	c.JSON(http.StatusOK, resp)
+}
+
 func (h *Handler) GetAuthCleanerState(c *gin.Context) {
 	svc := h.cleanerService()
 	if svc == nil {

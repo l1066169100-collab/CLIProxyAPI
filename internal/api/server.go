@@ -28,6 +28,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/managementasset"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/managementui"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v6/sdk/access"
@@ -327,6 +328,7 @@ func (s *Server) setupRoutes() {
 	})
 
 	s.engine.GET("/management.html", s.serveManagementControlPanel)
+	s.engine.GET(managementui.AuthCleanerUIScriptPath, s.serveManagementAuthCleanerUIAsset)
 	openaiHandlers := openai.NewOpenAIAPIHandler(s.handlers)
 	geminiHandlers := gemini.NewGeminiAPIHandler(s.handlers)
 	geminiCLIHandlers := gemini.NewGeminiCLIAPIHandler(s.handlers)
@@ -543,6 +545,7 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/auth-cleaner/status", s.mgmt.GetAuthCleanerStatus)
 		mgmt.GET("/auth-cleaner/config", s.mgmt.GetAuthCleanerConfig)
 		mgmt.POST("/auth-cleaner/run", s.mgmt.RunAuthCleaner)
+		mgmt.POST("/auth-cleaner/revive-now", s.mgmt.ForceAuthCleanerRevivalNow)
 		mgmt.GET("/auth-cleaner/state", s.mgmt.GetAuthCleanerState)
 		mgmt.GET("/auth-cleaner/reports", s.mgmt.ListAuthCleanerReports)
 		mgmt.GET("/auth-cleaner/reports/:name", s.mgmt.GetAuthCleanerReport)
@@ -706,7 +709,23 @@ func (s *Server) serveManagementControlPanel(c *gin.Context) {
 		}
 	}
 
-	c.File(filePath)
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		log.WithError(err).Error("failed to read management control panel asset")
+		c.AbortWithStatus(http.StatusInternalServerError)
+		return
+	}
+
+	c.Data(http.StatusOK, "text/html; charset=utf-8", managementui.InjectAuthCleanerUI(data))
+}
+
+func (s *Server) serveManagementAuthCleanerUIAsset(c *gin.Context) {
+	cfg := s.cfg
+	if cfg == nil || cfg.RemoteManagement.DisableControlPanel {
+		c.AbortWithStatus(http.StatusNotFound)
+		return
+	}
+	c.Data(http.StatusOK, "application/javascript; charset=utf-8", managementui.AuthCleanerUIScript())
 }
 
 func (s *Server) enableKeepAlive(timeout time.Duration, onTimeout func()) {

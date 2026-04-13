@@ -334,6 +334,51 @@ func (s *Service) LoadState() ([]byte, error) {
 	return nil, err
 }
 
+func (s *Service) ForceRevivalNow(names []string) (int, error) {
+	if s == nil {
+		return 0, fmt.Errorf("auth cleaner unavailable")
+	}
+
+	opts := s.snapshotOptions()
+	state, err := loadStateFile(opts.StateFile)
+	if err != nil {
+		return 0, err
+	}
+
+	selected := make(map[string]struct{})
+	for _, name := range names {
+		trimmed := strings.TrimSpace(name)
+		if trimmed == "" {
+			continue
+		}
+		selected[trimmed] = struct{}{}
+	}
+
+	now := formatISOTime(time.Now().UTC())
+	forced := 0
+	for name, entry := range state.QuotaAccounts {
+		if entry == nil {
+			continue
+		}
+		if len(selected) > 0 {
+			if _, ok := selected[name]; !ok {
+				continue
+			}
+		}
+		entry.NextRevivalCheckAt = now
+		forced++
+	}
+
+	if forced == 0 {
+		return 0, nil
+	}
+	if err := saveStateFile(opts.StateFile, state); err != nil {
+		return 0, err
+	}
+	s.wake()
+	return forced, nil
+}
+
 func (s *Service) loop(ctx context.Context) {
 	nextDelay := time.Duration(0)
 	timer := time.NewTimer(0)
