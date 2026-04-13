@@ -268,8 +268,24 @@ func (s *Service) run(ctx context.Context, opts cleanerOptions, dryRun bool) (*R
 
 	if !dryRun {
 		now := time.Now().UTC()
-		names := make([]string, 0, len(state.QuotaAccounts))
+		names := make([]string, 0, len(state.QuotaAccounts)+len(items))
+		seenNames := make(map[string]struct{}, len(state.QuotaAccounts)+len(items))
+		for _, item := range items {
+			if !shouldAttemptDisabledRevival(item) {
+				continue
+			}
+			ensureQuotaState(state, item, firstNonEmpty(item.StatusMessage, "disabled"), opts)
+			if _, ok := seenNames[item.Name]; ok {
+				continue
+			}
+			seenNames[item.Name] = struct{}{}
+			names = append(names, item.Name)
+		}
 		for name := range state.QuotaAccounts {
+			if _, ok := seenNames[name]; ok {
+				continue
+			}
+			seenNames[name] = struct{}{}
 			names = append(names, name)
 		}
 		sort.Strings(names)
@@ -279,9 +295,11 @@ func (s *Service) run(ctx context.Context, opts cleanerOptions, dryRun bool) (*R
 			if !ok || entry == nil {
 				continue
 			}
-			dueAt := parseISOTime(entry.NextRevivalCheckAt)
-			if !dueAt.IsZero() && dueAt.After(now) {
-				continue
+			if !item.Disabled {
+				dueAt := parseISOTime(entry.NextRevivalCheckAt)
+				if !dueAt.IsZero() && dueAt.After(now) {
+					continue
+				}
 			}
 			row := s.runRevivalCycle(ctx, opts, store, item, entry, summary, backupRoot)
 			results = append(results, row)
@@ -499,6 +517,21 @@ func shouldProbeAPICall(item authItem, providerSet map[string]struct{}) bool {
 	}
 	kind, _ := classifyItem(item)
 	return kind == "available"
+}
+
+func shouldAttemptDisabledRevival(item authItem) bool {
+	if !item.Disabled {
+		return false
+	}
+	if item.RuntimeOnly || item.Source != "file" || item.Path == "" {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(item.Provider)) {
+	case "codex", "openai", "chatgpt":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Service) runAPICallFullScan(ctx context.Context, opts cleanerOptions, items []authItem, providerSet map[string]struct{}, summary *RunSummary) map[string]apiProbeResult {
