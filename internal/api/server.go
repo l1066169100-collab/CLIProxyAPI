@@ -540,6 +540,13 @@ func (s *Server) registerManagementRoutes() {
 
 		mgmt.POST("/api-call", s.mgmt.APICall)
 
+		mgmt.GET("/auth-cleaner/status", s.mgmt.GetAuthCleanerStatus)
+		mgmt.GET("/auth-cleaner/config", s.mgmt.GetAuthCleanerConfig)
+		mgmt.POST("/auth-cleaner/run", s.mgmt.RunAuthCleaner)
+		mgmt.GET("/auth-cleaner/state", s.mgmt.GetAuthCleanerState)
+		mgmt.GET("/auth-cleaner/reports", s.mgmt.ListAuthCleanerReports)
+		mgmt.GET("/auth-cleaner/reports/:name", s.mgmt.GetAuthCleanerReport)
+
 		mgmt.GET("/quota-exceeded/switch-project", s.mgmt.GetSwitchProject)
 		mgmt.PUT("/quota-exceeded/switch-project", s.mgmt.PutSwitchProject)
 		mgmt.PATCH("/quota-exceeded/switch-project", s.mgmt.PutSwitchProject)

@@ -105,6 +105,30 @@ max-retry-interval: 30
 # When true, disable auth/model cooldown scheduling globally (prevents blackout windows after failure states).
 disable-cooling: false
 
+# Built-in auth cleaner / revival worker.
+# Can disable quota-exhausted auths, delete unrecoverable 401 auth files,
+# and periodically try to revive OpenAI/Codex/ChatGPT auth files.
+# auth-cleaner:
+#   enable: true
+#   interval-seconds: 60
+#   timeout-seconds: 20
+#   enable-api-call-check: true
+#   api-call-url: "https://chatgpt.com/backend-api/wham/usage"
+#   api-call-method: "GET"
+#   api-call-user-agent: "Mozilla/5.0 CLIProxyAPI auth-cleaner/1.0"
+#   api-call-providers: "codex,openai,chatgpt"
+#   api-call-max-per-run: 9
+#   api-call-sleep-min-seconds: 5
+#   api-call-sleep-max-seconds: 10
+#   revival-wait-days: 7
+#   revival-probe-interval-hours: 12
+#   # state-file: "/root/auth-cleaner-state.json"
+#   # report-dir: "/root/reports/auth-cleaner"
+#   # backup-dir: "/root/backups/auth-cleaner"
+#   retention-keep-reports: 200
+#   retention-report-max-age-days: 7
+#   retention-backup-max-age-days: 14
+
 # Core auth auto-refresh worker pool size (OAuth/file-based auth token refresh).
 # When > 0, overrides the default worker count (16).
 # auth-auto-refresh-workers: 16

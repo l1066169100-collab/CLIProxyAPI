@@ -77,6 +77,9 @@ type Config struct {
 	// DisableCooling disables quota cooldown scheduling when true.
 	DisableCooling bool `yaml:"disable-cooling" json:"disable-cooling"`
 
+	// AuthCleaner controls the built-in auth cleanup / revival worker.
+	AuthCleaner AuthCleanerConfig `yaml:"auth-cleaner" json:"auth-cleaner"`
+
 	// AuthAutoRefreshWorkers overrides the size of the core auth auto-refresh worker pool.
 	// When <= 0, the default worker count is used.
 	AuthAutoRefreshWorkers int `yaml:"auth-auto-refresh-workers" json:"auth-auto-refresh-workers"`
@@ -207,6 +210,39 @@ type MemoryConcurrencyConfig struct {
 	WaitTimeoutSeconds float64 `yaml:"wait-timeout-seconds" json:"wait-timeout-seconds"`
 	// CheckIntervalSeconds is the memory sampling interval.
 	CheckIntervalSeconds int `yaml:"check-interval-seconds" json:"check-interval-seconds"`
+}
+
+// AuthCleanerConfig controls the built-in auth cleanup worker that can disable
+// quota-exhausted credentials, remove unrecoverable 401 auth files, and
+// periodically try to revive OpenAI-family auth files after a waiting window.
+type AuthCleanerConfig struct {
+	Enable bool `yaml:"enable" json:"enable"`
+
+	IntervalSeconds int `yaml:"interval-seconds" json:"interval-seconds"`
+	TimeoutSeconds  int `yaml:"timeout-seconds" json:"timeout-seconds"`
+
+	EnableAPICallCheck bool   `yaml:"enable-api-call-check" json:"enable-api-call-check"`
+	APICallURL         string `yaml:"api-call-url" json:"api-call-url"`
+	APICallMethod      string `yaml:"api-call-method" json:"api-call-method"`
+	APICallAccountID   string `yaml:"api-call-account-id" json:"api-call-account-id"`
+	APICallUserAgent   string `yaml:"api-call-user-agent" json:"api-call-user-agent"`
+	APICallBody        string `yaml:"api-call-body" json:"api-call-body"`
+	APICallProviders   string `yaml:"api-call-providers" json:"api-call-providers"`
+	APICallMaxPerRun   int    `yaml:"api-call-max-per-run" json:"api-call-max-per-run"`
+
+	APICallSleepMinSeconds float64 `yaml:"api-call-sleep-min-seconds" json:"api-call-sleep-min-seconds"`
+	APICallSleepMaxSeconds float64 `yaml:"api-call-sleep-max-seconds" json:"api-call-sleep-max-seconds"`
+
+	RevivalWaitDays           int `yaml:"revival-wait-days" json:"revival-wait-days"`
+	RevivalProbeIntervalHours int `yaml:"revival-probe-interval-hours" json:"revival-probe-interval-hours"`
+
+	StateFile string `yaml:"state-file" json:"state-file"`
+	ReportDir string `yaml:"report-dir" json:"report-dir"`
+	BackupDir string `yaml:"backup-dir" json:"backup-dir"`
+
+	RetentionKeepReports      int `yaml:"retention-keep-reports" json:"retention-keep-reports"`
+	RetentionReportMaxAgeDays int `yaml:"retention-report-max-age-days" json:"retention-report-max-age-days"`
+	RetentionBackupMaxAgeDays int `yaml:"retention-backup-max-age-days" json:"retention-backup-max-age-days"`
 }
 
 // RemoteManagement holds management API configuration under 'remote-management'.

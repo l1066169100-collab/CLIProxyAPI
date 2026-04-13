@@ -3,6 +3,7 @@
 package management
 
 import (
+	"context"
 	"crypto/subtle"
 	"fmt"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/authcleaner"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/buildinfo"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
@@ -48,6 +50,7 @@ type Handler struct {
 	envSecret           string
 	logDir              string
 	postAuthHook        coreauth.PostAuthHook
+	cleaner             *authcleaner.Service
 }
 
 // NewHandler creates a new management handler instance.
@@ -65,6 +68,8 @@ func NewHandler(cfg *config.Config, configFilePath string, manager *coreauth.Man
 		allowRemoteOverride: envSecret != "",
 		envSecret:           envSecret,
 	}
+	h.cleaner = authcleaner.NewService(cfg, configFilePath, manager, h.tokenStore)
+	h.cleaner.Start(context.Background())
 	h.startAttemptCleanup()
 	return h
 }
@@ -105,10 +110,20 @@ func NewHandlerWithoutConfigFilePath(cfg *config.Config, manager *coreauth.Manag
 }
 
 // SetConfig updates the in-memory config reference when the server hot-reloads.
-func (h *Handler) SetConfig(cfg *config.Config) { h.cfg = cfg }
+func (h *Handler) SetConfig(cfg *config.Config) {
+	h.cfg = cfg
+	if h.cleaner != nil {
+		h.cleaner.SetConfig(cfg, h.configFilePath)
+	}
+}
 
 // SetAuthManager updates the auth manager reference used by management endpoints.
-func (h *Handler) SetAuthManager(manager *coreauth.Manager) { h.authManager = manager }
+func (h *Handler) SetAuthManager(manager *coreauth.Manager) {
+	h.authManager = manager
+	if h.cleaner != nil {
+		h.cleaner.SetAuthManager(manager)
+	}
+}
 
 // SetUsageStatistics allows replacing the usage statistics reference.
 func (h *Handler) SetUsageStatistics(stats *usage.RequestStatistics) { h.usageStats = stats }
