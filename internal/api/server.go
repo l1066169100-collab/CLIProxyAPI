@@ -716,6 +716,9 @@ func (s *Server) serveManagementControlPanel(c *gin.Context) {
 		return
 	}
 
+	c.Header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+	c.Header("Pragma", "no-cache")
+	c.Header("Expires", "0")
 	c.Data(http.StatusOK, "text/html; charset=utf-8", managementui.InjectAuthCleanerUI(data))
 }
 
@@ -725,6 +728,9 @@ func (s *Server) serveManagementAuthCleanerUIAsset(c *gin.Context) {
 		c.AbortWithStatus(http.StatusNotFound)
 		return
 	}
+	c.Header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+	c.Header("Pragma", "no-cache")
+	c.Header("Expires", "0")
 	c.Data(http.StatusOK, "application/javascript; charset=utf-8", managementui.AuthCleanerUIScript())
 }
 

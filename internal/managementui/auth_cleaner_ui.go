@@ -1,7 +1,9 @@
 package managementui
 
 import (
+	"crypto/sha256"
 	_ "embed"
+	"encoding/hex"
 	"strings"
 )
 
@@ -12,9 +14,19 @@ const (
 
 //go:embed auth_cleaner_ui.js
 var authCleanerUIScript string
+var authCleanerUIScriptURL string
 
 func AuthCleanerUIScript() []byte {
 	return []byte(authCleanerUIScript)
+}
+
+func AuthCleanerUIScriptURL() string {
+	if authCleanerUIScriptURL != "" {
+		return authCleanerUIScriptURL
+	}
+	sum := sha256.Sum256([]byte(authCleanerUIScript))
+	authCleanerUIScriptURL = AuthCleanerUIScriptPath + "?v=" + hex.EncodeToString(sum[:6])
+	return authCleanerUIScriptURL
 }
 
 func InjectAuthCleanerUI(html []byte) []byte {
@@ -27,7 +39,7 @@ func InjectAuthCleanerUI(html []byte) []byte {
 		return html
 	}
 
-	snippet := "\n<script " + authCleanerUIMarker + ` src="` + AuthCleanerUIScriptPath + `"></script>` + "\n"
+	snippet := "\n<script " + authCleanerUIMarker + ` src="` + AuthCleanerUIScriptURL() + `"></script>` + "\n"
 	lower := strings.ToLower(content)
 	if idx := strings.LastIndex(lower, "</body>"); idx >= 0 {
 		return []byte(content[:idx] + snippet + content[idx:])

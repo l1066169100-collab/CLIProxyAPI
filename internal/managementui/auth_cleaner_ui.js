@@ -117,8 +117,15 @@ border-radius:12px;padding:12px;max-height:220px;overflow:auto;font-size:12px;li
     document.head.append(style);
   }
 
+  function resetExistingUI() {
+    [ROOT_ID, BTN_ID, STYLE_ID].forEach((id) => {
+      const el = document.getElementById(id);
+      if (el) el.remove();
+    });
+  }
+
   function init() {
-    if (document.getElementById(ROOT_ID) || document.getElementById(BTN_ID)) return;
+    resetExistingUI();
     ensureStyle();
 
     const state = {
