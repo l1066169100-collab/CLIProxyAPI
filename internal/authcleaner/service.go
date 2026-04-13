@@ -492,8 +492,9 @@ func normalizeOptions(cfg *config.Config, configFilePath string) cleanerOptions 
 		reportDir = filepath.Join(baseDir, "reports", "auth-cleaner")
 	}
 	backupDir := strings.TrimSpace(raw.BackupDir)
-	if backupDir == "" {
-		backupDir = filepath.Join(baseDir, "backups", "auth-cleaner")
+	cleanBackupDir := ""
+	if backupDir != "" {
+		cleanBackupDir = filepath.Clean(backupDir)
 	}
 	intervalSeconds := raw.IntervalSeconds
 	if intervalSeconds <= 0 {
@@ -591,7 +592,7 @@ func normalizeOptions(cfg *config.Config, configFilePath string) cleanerOptions 
 			RevivalProbeIntervalHours: revivalProbeHours,
 			StateFile:                 filepath.Clean(stateFile),
 			ReportDir:                 filepath.Clean(reportDir),
-			BackupDir:                 filepath.Clean(backupDir),
+			BackupDir:                 cleanBackupDir,
 			RetentionKeepReports:      keepReports,
 			RetentionReportMaxAgeDays: reportMaxAgeDays,
 			RetentionBackupMaxAgeDays: backupMaxAgeDays,

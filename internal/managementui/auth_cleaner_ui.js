@@ -234,7 +234,7 @@ border-radius:12px;padding:12px;max-height:220px;overflow:auto;font-size:12px;li
         ["本轮刷新成功", summary.refresh_succeeded ?? 0],
         ["本轮恢复启用", summary.revival_enabled ?? 0],
         ["本轮进入恢复", summary.revival_pending ?? 0],
-        ["本轮删除401", summary.deleted ?? 0],
+        ["本轮失效禁用", summary.invalid_disabled ?? summary.deleted ?? 0],
       ];
       summaryGrid.innerHTML = "";
       cards.forEach(([key, value]) => {
@@ -277,7 +277,6 @@ border-radius:12px;padding:12px;max-height:220px;overflow:auto;font-size:12px;li
         ["下次自动扫描", formatTime(status?.next_run_at)],
         ["状态文件追踪数", quotaAccounts],
         ["报告目录", cleanerConfig.report_dir || "-"],
-        ["备份目录", cleanerConfig.backup_dir || "-"],
       ];
       overviewKv.innerHTML = "";
       entries.forEach(([k, v]) => {
@@ -337,7 +336,7 @@ border-radius:12px;padding:12px;max-height:220px;overflow:auto;font-size:12px;li
         ["刷新成功", summary.refresh_succeeded ?? 0],
         ["恢复启用", summary.revival_enabled ?? 0],
         ["仍然 quota", summary.revival_still_quota ?? 0],
-        ["删除 401", summary.deleted ?? 0],
+        ["失效禁用", summary.invalid_disabled ?? summary.deleted ?? 0],
       ];
       cards.forEach(([key, value]) => {
         reportSummaryGrid.append(

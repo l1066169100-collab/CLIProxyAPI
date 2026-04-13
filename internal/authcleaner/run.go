@@ -52,6 +52,7 @@ type RunSummary struct {
 	Available         int `json:"available"`
 	QuotaExhausted    int `json:"quota_exhausted"`
 	Disabled          int `json:"disabled"`
+	InvalidDisabled   int `json:"invalid_disabled"`
 	Unavailable       int `json:"unavailable"`
 	APICallCandidates int `json:"api_call_candidates"`
 	APICallBatches    int `json:"api_call_batches"`
@@ -142,19 +143,12 @@ func (s *Service) run(ctx context.Context, opts cleanerOptions, dryRun bool) (*R
 	if manager == nil {
 		return nil, fmt.Errorf("core auth manager unavailable")
 	}
-	store := s.snapshotTokenStore()
-	if dirSetter, ok := store.(interface{ SetBaseDir(string) }); ok && strings.TrimSpace(opts.StateFile) != "" {
-		// Keep token store pointed at auth-dir defaults if caller provided absolute paths elsewhere.
-		// No-op when the store does not support base-dir updates.
-		_ = dirSetter
-	}
 	state, err := loadStateFile(opts.StateFile)
 	if err != nil {
 		return nil, err
 	}
 	items := collectAuthItems(manager.List())
 	runID := time.Now().UTC().Format("20060102T150405Z")
-	backupRoot := filepath.Join(opts.BackupDir, runID)
 	summary := &RunSummary{}
 	results := make([]map[string]any, 0, len(items))
 	nameToItem := make(map[string]authItem, len(items))
@@ -231,26 +225,19 @@ func (s *Service) run(ctx context.Context, opts cleanerOptions, dryRun bool) (*R
 		case "delete_401":
 			summary.PendingDelete401++
 			if dryRun {
-				row["delete_result"] = "dry_run_skip"
-			} else if item.RuntimeOnly || item.Source != "file" || item.Path == "" {
-				summary.BackupFailures++
-				row["delete_result"] = "skip_runtime_only"
-				row["delete_error"] = "runtime_only/source!=file，无法删除"
-			} else if !strings.HasSuffix(strings.ToLower(item.Name), ".json") {
-				summary.BackupFailures++
-				row["delete_result"] = "skip_no_json_name"
-				row["delete_error"] = "不是标准 .json 文件名，默认不删"
+				row["disable_result"] = "dry_run_skip_invalid_auth"
 			} else {
-				backupPath, errDelete := s.deleteAuthFile(ctx, store, item, filepath.Join(backupRoot, "delete-401"))
-				if errDelete != nil {
-					summary.DeleteFailures++
-					row["delete_result"] = "delete_failed"
-					row["delete_error"] = errDelete.Error()
+				if errDisable := s.disableAuth(ctx, item, "disabled by auth cleaner (invalid auth)"); errDisable != nil {
+					summary.DisableFailures++
+					row["disable_result"] = "disable_failed"
+					row["disable_error"] = errDisable.Error()
 				} else {
-					summary.Deleted++
-					row["delete_result"] = "deleted"
-					row["backup_path"] = backupPath
-					_ = clearQuotaState(state, item.Name)
+					summary.InvalidDisabled++
+					row["disable_result"] = "disabled_invalid_auth"
+					if item.Name != "" && clearQuotaState(state, item.Name) {
+						summary.StateCleared++
+						row["state_cleared"] = "invalid_auth"
+					}
 				}
 			}
 		default:
@@ -301,8 +288,12 @@ func (s *Service) run(ctx context.Context, opts cleanerOptions, dryRun bool) (*R
 					continue
 				}
 			}
-			row := s.runRevivalCycle(ctx, opts, store, item, entry, summary, backupRoot)
+			row := s.runRevivalCycle(ctx, opts, item, entry, summary)
 			results = append(results, row)
+			if clearState, _ := row["clear_state"].(bool); clearState {
+				delete(state.QuotaAccounts, name)
+				continue
+			}
 			if result, _ := row["revival_result"].(string); result == "enabled" || strings.HasPrefix(result, "deleted_") {
 				delete(state.QuotaAccounts, name)
 			}
@@ -962,6 +953,9 @@ func applyRetention(opts cleanerOptions) error {
 	if err := cleanupReports(opts.ReportDir, opts.RetentionKeepReports, opts.RetentionReportMaxAgeDays); err != nil {
 		return err
 	}
+	if strings.TrimSpace(opts.BackupDir) == "" {
+		return nil
+	}
 	return cleanupBackupRoot(opts.BackupDir, opts.RetentionBackupMaxAgeDays)
 }
 
@@ -1240,7 +1234,7 @@ func writeJSONPayload(path string, payload map[string]any) error {
 	return os.Rename(tmp, path)
 }
 
-func (s *Service) runRevivalCycle(ctx context.Context, opts cleanerOptions, store coreauth.Store, item authItem, entry *quotaStateEntry, summary *RunSummary, backupRoot string) map[string]any {
+func (s *Service) runRevivalCycle(ctx context.Context, opts cleanerOptions, item authItem, entry *quotaStateEntry, summary *RunSummary) map[string]any {
 	row := map[string]any{
 		"name":          item.Name,
 		"provider":      item.Provider,
@@ -1271,16 +1265,9 @@ func (s *Service) runRevivalCycle(ctx context.Context, opts cleanerOptions, stor
 	if err != nil {
 		row["revival_result"] = "load_failed"
 		row["reason"] = err.Error()
-		if isDeleteWorthy(err.Error()) {
-			backupPath, errDelete := s.deleteAuthFile(ctx, store, item, filepath.Join(backupRoot, "delete-on-load-failed"))
-			if errDelete != nil {
-				row["delete_error"] = errDelete.Error()
-				entry.NextRevivalCheckAt = formatISOTime(now.Add(time.Duration(opts.RevivalProbeIntervalHours) * time.Hour))
-			} else {
-				summary.RevivalDeleted++
-				row["revival_result"] = "deleted_on_load_failure"
-				row["backup_path"] = backupPath
-			}
+		if os.IsNotExist(err) {
+			row["revival_result"] = "missing_file"
+			row["clear_state"] = true
 		} else {
 			entry.NextRevivalCheckAt = formatISOTime(now.Add(time.Duration(opts.RevivalProbeIntervalHours) * time.Hour))
 		}
@@ -1289,9 +1276,6 @@ func (s *Service) runRevivalCycle(ctx context.Context, opts cleanerOptions, stor
 	row["auth_payload_loaded"] = true
 
 	summary.RefreshAttempts++
-	if backupPath, errBackup := copyJSONFile(path, filepath.Join(backupRoot, "before-refresh")); errBackup == nil {
-		row["refresh_backup"] = backupPath
-	}
 	refreshedPayload, refreshResp, errRefresh := refreshOpenAIFamilyTokens(ctx, opts, item, authPayload)
 	if errRefresh != nil {
 		summary.RefreshFailed++
@@ -1299,14 +1283,13 @@ func (s *Service) runRevivalCycle(ctx context.Context, opts cleanerOptions, stor
 		row["reason"] = errRefresh.Error()
 		entry.LastError = errRefresh.Error()
 		if isDeleteWorthy(errRefresh.Error()) {
-			backupPath, errDelete := s.deleteAuthFile(ctx, store, item, filepath.Join(backupRoot, "delete-on-refresh-failed"))
-			if errDelete != nil {
-				row["delete_error"] = errDelete.Error()
-				entry.NextRevivalCheckAt = formatISOTime(now.Add(time.Duration(opts.RevivalProbeIntervalHours) * time.Hour))
-			} else {
-				summary.RevivalDeleted++
-				row["revival_result"] = "deleted_on_refresh_failure"
-				row["backup_path"] = backupPath
+			summary.InvalidDisabled++
+			row["revival_result"] = "invalid_auth_keep_disabled"
+			row["clear_state"] = true
+			row["reason"] = simplifyReason(errRefresh.Error())
+			entry.LastError = simplifyReason(errRefresh.Error())
+			if errDisable := s.disableAuth(ctx, item, "disabled by auth cleaner (invalid refresh auth)"); errDisable != nil {
+				row["disable_error"] = errDisable.Error()
 			}
 		} else {
 			entry.NextRevivalCheckAt = formatISOTime(now.Add(time.Duration(opts.RevivalProbeIntervalHours) * time.Hour))
@@ -1358,17 +1341,13 @@ func (s *Service) runRevivalCycle(ctx context.Context, opts cleanerOptions, stor
 		return row
 	default:
 		if classification == "delete_401" || isDeleteWorthy(reason) {
-			backupPath, errDelete := s.deleteAuthFile(ctx, store, item, filepath.Join(backupRoot, "delete-on-bad-probe"))
-			if errDelete != nil {
-				row["revival_result"] = "delete_failed"
-				row["delete_error"] = errDelete.Error()
-				entry.LastError = errDelete.Error()
-				entry.NextRevivalCheckAt = formatISOTime(now.Add(time.Duration(opts.RevivalProbeIntervalHours) * time.Hour))
-				return row
+			summary.InvalidDisabled++
+			row["revival_result"] = "invalid_auth_keep_disabled"
+			row["clear_state"] = true
+			entry.LastError = simplifyReason(reason)
+			if errDisable := s.disableAuth(ctx, item, "disabled by auth cleaner (invalid probe auth)"); errDisable != nil {
+				row["disable_error"] = errDisable.Error()
 			}
-			summary.RevivalDeleted++
-			row["revival_result"] = "deleted_on_bad_probe"
-			row["backup_path"] = backupPath
 			return row
 		}
 		row["revival_result"] = "retry_later"

@@ -124,10 +124,8 @@ disable-cooling: false
 #   revival-probe-interval-hours: 12
 #   # state-file: "/root/auth-cleaner-state.json"
 #   # report-dir: "/root/reports/auth-cleaner"
-#   # backup-dir: "/root/backups/auth-cleaner"
 #   retention-keep-reports: 200
 #   retention-report-max-age-days: 7
-#   retention-backup-max-age-days: 14
 
 # Core auth auto-refresh worker pool size (OAuth/file-based auth token refresh).
 # When > 0, overrides the default worker count (16).
