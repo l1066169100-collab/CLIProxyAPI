@@ -134,9 +134,15 @@ func (s *FileTokenStore) List(ctx context.Context) ([]*cliproxyauth.Auth, error)
 			return walkErr
 		}
 		if d.IsDir() {
+			if ShouldSkipAuthWalkEntry(dir, path, d) {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		if !strings.HasSuffix(strings.ToLower(d.Name()), ".json") {
+			return nil
+		}
+		if ShouldIgnoreAuthPath(dir, path) {
 			return nil
 		}
 		auth, err := s.readAuthFile(path, dir)
@@ -192,6 +198,9 @@ func (s *FileTokenStore) readAuthFile(path, baseDir string) (*cliproxyauth.Auth,
 	metadata := make(map[string]any)
 	if err = json.Unmarshal(data, &metadata); err != nil {
 		return nil, fmt.Errorf("unmarshal auth json: %w", err)
+	}
+	if !LooksLikeAuthMetadata(metadata) {
+		return nil, nil
 	}
 	provider, _ := metadata["type"].(string)
 	if provider == "" {

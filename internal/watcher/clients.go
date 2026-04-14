@@ -17,6 +17,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/watcher/diff"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/watcher/synthesizer"
+	sdkauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/auth"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
 )
@@ -97,7 +98,14 @@ func (w *Watcher) reloadClients(rescanAuth bool, affectedOAuthProviders []string
 						continue
 					}
 					fullPath := filepath.Join(resolvedAuthDir, name)
+					if sdkauth.ShouldIgnoreAuthPath(resolvedAuthDir, fullPath) {
+						continue
+					}
 					if data, errReadFile := os.ReadFile(fullPath); errReadFile == nil && len(data) > 0 {
+						var metadata map[string]any
+						if errParse := json.Unmarshal(data, &metadata); errParse != nil || !sdkauth.LooksLikeAuthMetadata(metadata) {
+							continue
+						}
 						sum := sha256.Sum256(data)
 						normalizedPath := w.normalizeAuthPath(fullPath)
 						w.lastAuthHashes[normalizedPath] = hex.EncodeToString(sum[:])
@@ -147,6 +155,10 @@ func (w *Watcher) reloadClients(rescanAuth bool, affectedOAuthProviders []string
 }
 
 func (w *Watcher) addOrUpdateClient(path string) {
+	if sdkauth.ShouldIgnoreAuthPath(w.authDir, path) {
+		log.Debugf("ignoring non-auth json file: %s", filepath.Base(path))
+		return
+	}
 	data, errRead := os.ReadFile(path)
 	if errRead != nil {
 		log.Errorf("failed to read auth file %s: %v", filepath.Base(path), errRead)
@@ -162,11 +174,18 @@ func (w *Watcher) addOrUpdateClient(path string) {
 	normalized := w.normalizeAuthPath(path)
 
 	// Parse new auth content for diff comparison
-	var newAuth coreauth.Auth
-	if errParse := json.Unmarshal(data, &newAuth); errParse != nil {
+	var metadata map[string]any
+	if errParse := json.Unmarshal(data, &metadata); errParse != nil {
 		log.Errorf("failed to parse auth file %s: %v", filepath.Base(path), errParse)
 		return
 	}
+	if !sdkauth.LooksLikeAuthMetadata(metadata) {
+		log.Debugf("ignoring non-auth json payload: %s", filepath.Base(path))
+		return
+	}
+
+	var newAuth coreauth.Auth
+	_ = json.Unmarshal(data, &newAuth)
 
 	w.clientsMutex.Lock()
 	if w.config == nil {
@@ -301,7 +320,7 @@ func authIDSet(auths map[string]*coreauth.Auth) map[string]*coreauth.Auth {
 
 func (w *Watcher) loadFileClients(cfg *config.Config) int {
 	authFileCount := 0
-	successfulAuthCount := 0
+	candidateJSONCount := 0
 
 	authDir, errResolveAuthDir := util.ResolveAuthDir(cfg.AuthDir)
 	if errResolveAuthDir != nil {
@@ -325,14 +344,20 @@ func (w *Watcher) loadFileClients(cfg *config.Config) int {
 		if !strings.HasSuffix(strings.ToLower(name), ".json") {
 			continue
 		}
-		authFileCount++
-		log.Debugf("processing auth file %d: %s", authFileCount, name)
+		candidateJSONCount++
 		fullPath := filepath.Join(authDir, name)
+		if sdkauth.ShouldIgnoreAuthPath(authDir, fullPath) {
+			continue
+		}
 		if data, errReadFile := os.ReadFile(fullPath); errReadFile == nil && len(data) > 0 {
-			successfulAuthCount++
+			var metadata map[string]any
+			if errParse := json.Unmarshal(data, &metadata); errParse == nil && sdkauth.LooksLikeAuthMetadata(metadata) {
+				authFileCount++
+				log.Debugf("processing auth file %d: %s", authFileCount, name)
+			}
 		}
 	}
-	log.Debugf("auth directory scan complete - found %d .json files, %d readable", authFileCount, successfulAuthCount)
+	log.Debugf("auth directory scan complete - found %d .json files, %d valid auth files", candidateJSONCount, authFileCount)
 	return authFileCount
 }
 

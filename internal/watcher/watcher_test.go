@@ -1263,6 +1263,29 @@ func TestLoadFileClientsWalkError(t *testing.T) {
 	}
 }
 
+func TestLoadFileClientsIgnoresNonAuthJSON(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	writeJSON := func(name string, payload string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(tmpDir, name), []byte(payload), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+
+	writeJSON("real.json", `{"type":"codex","email":"real@example.com"}`)
+	writeJSON("auth-cleaner-state.json", `{"version":1}`)
+	writeJSON("sub2.json", `{"accounts":[{"name":"bundle"}]}`)
+
+	cfg := &config.Config{AuthDir: tmpDir}
+	w := &Watcher{}
+	w.SetConfig(cfg)
+
+	if count := w.loadFileClients(cfg); count != 1 {
+		t.Fatalf("expected 1 valid auth file, got %d", count)
+	}
+}
+
 func TestReloadConfigIfChangedHandlesMissingAndEmpty(t *testing.T) {
 	tmpDir := t.TempDir()
 	authDir := filepath.Join(tmpDir, "auth")

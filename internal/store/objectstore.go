@@ -18,6 +18,7 @@ import (
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/misc"
+	sdkauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/auth"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
 )
@@ -237,9 +238,15 @@ func (s *ObjectTokenStore) List(_ context.Context) ([]*cliproxyauth.Auth, error)
 			return walkErr
 		}
 		if d.IsDir() {
+			if sdkauth.ShouldSkipAuthWalkEntry(dir, path, d) {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		if !strings.HasSuffix(strings.ToLower(d.Name()), ".json") {
+			return nil
+		}
+		if sdkauth.ShouldIgnoreAuthPath(dir, path) {
 			return nil
 		}
 		auth, err := s.readAuthFile(path, dir)
@@ -564,6 +571,9 @@ func (s *ObjectTokenStore) readAuthFile(path, baseDir string) (*cliproxyauth.Aut
 	metadata := make(map[string]any)
 	if err = json.Unmarshal(data, &metadata); err != nil {
 		return nil, fmt.Errorf("unmarshal auth json: %w", err)
+	}
+	if !sdkauth.LooksLikeAuthMetadata(metadata) {
+		return nil, nil
 	}
 	provider := strings.TrimSpace(valueAsString(metadata["type"]))
 	if provider == "" {

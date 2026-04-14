@@ -325,12 +325,19 @@ func (h *Handler) listAuthFilesFromDisk(c *gin.Context) {
 		if !strings.HasSuffix(strings.ToLower(name), ".json") {
 			continue
 		}
+		full := filepath.Join(h.cfg.AuthDir, name)
+		if sdkAuth.ShouldIgnoreAuthPath(h.cfg.AuthDir, full) {
+			continue
+		}
 		if info, errInfo := e.Info(); errInfo == nil {
 			fileData := gin.H{"name": name, "size": info.Size(), "modtime": info.ModTime()}
 
 			// Read file to get type field
-			full := filepath.Join(h.cfg.AuthDir, name)
 			if data, errRead := os.ReadFile(full); errRead == nil {
+				var metadata map[string]any
+				if errParse := json.Unmarshal(data, &metadata); errParse != nil || !sdkAuth.LooksLikeAuthMetadata(metadata) {
+					continue
+				}
 				typeValue := gjson.GetBytes(data, "type").String()
 				emailValue := gjson.GetBytes(data, "email").String()
 				fileData["type"] = typeValue
@@ -683,6 +690,9 @@ func (h *Handler) DeleteAuthFile(c *gin.Context) {
 				continue
 			}
 			full := filepath.Join(h.cfg.AuthDir, name)
+			if sdkAuth.ShouldIgnoreAuthPath(h.cfg.AuthDir, full) {
+				continue
+			}
 			if !filepath.IsAbs(full) {
 				if abs, errAbs := filepath.Abs(full); errAbs == nil {
 					full = abs
@@ -994,6 +1004,9 @@ func (h *Handler) buildAuthFromFileData(path string, data []byte) (*coreauth.Aut
 	metadata := make(map[string]any)
 	if err := json.Unmarshal(data, &metadata); err != nil {
 		return nil, fmt.Errorf("invalid auth file: %w", err)
+	}
+	if sdkAuth.ShouldIgnoreAuthPath(h.cfg.AuthDir, path) || !sdkAuth.LooksLikeAuthMetadata(metadata) {
+		return nil, fmt.Errorf("invalid auth file: missing top-level type")
 	}
 	provider, _ := metadata["type"].(string)
 	if provider == "" {

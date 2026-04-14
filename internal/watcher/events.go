@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+	sdkauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/auth"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -75,6 +76,10 @@ func (w *Watcher) handleEvent(event fsnotify.Event) {
 	isAuthJSON := filepath.Dir(normalizedName) == normalizedAuthDir && strings.HasSuffix(normalizedName, ".json") && event.Op&authOps != 0
 	if !isConfigEvent && !isAuthJSON {
 		// Ignore unrelated files (e.g., cookie snapshots *.cookie) and other noise.
+		return
+	}
+	if isAuthJSON && sdkauth.ShouldIgnoreAuthPath(w.authDir, event.Name) {
+		log.Debugf("ignoring auth-cleaner artifact event: %s", filepath.Base(event.Name))
 		return
 	}
 
